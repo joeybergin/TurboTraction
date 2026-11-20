@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from traction import charts, engine, sources
+from traction import charts, competitors, engine, sources
 
 st.set_page_config(page_title="Traction · Story Channel Analytics", page_icon="🩸", layout="wide")
 
@@ -42,7 +42,7 @@ with st.sidebar:
     mode = st.radio("Data source", ["Demo channel", "YouTube channel", "Upload CSV"],
                     help="Start with the demo to see how it works.")
 
-    raw, info = None, {}
+    raw, info, api_key = None, {}, ""
     try:
         if mode == "Demo channel":
             raw, info = sources.demo_data()
@@ -146,8 +146,8 @@ else:
     k5.metric("Engagement rate", f"{df['engagement_rate'].median():.1f}%", border=True,
               help="(likes + 2×comments + 3×shares) per 100 views, median.")
 
-tab_over, tab_dna, tab_diag, tab_play, tab_data = st.tabs(
-    ["📈 Overview", "🧬 Content DNA", "🔍 Video diagnostics", "🗺️ Growth playbook", "🏷️ Tag & data"])
+tab_over, tab_dna, tab_diag, tab_play, tab_comp, tab_data = st.tabs(
+    ["📈 Overview", "🧬 Content DNA", "🔍 Video diagnostics", "🗺️ Growth playbook", "⚔️ Competitors", "🏷️ Tag & data"])
 
 # --------------------------------------------------------------------------- overview
 
@@ -359,3 +359,179 @@ Every video is compared to **this channel's own typical video**, so scores stay 
 - Signals that aren't available are skipped and the weights re-balance. Upload a YouTube Studio export to include CTR, retention and subscribers.
 - **Content-point lift** = average score of videos with that trait minus the channel average. Confidence rises with sample size and effect size.
 """)
+
+# --------------------------------------------------------------------------- competitors
+
+with tab_comp:
+    st.subheader("Compare against successful competitors")
+    st.caption("Other channels only share public numbers (views, likes, comments, length, upload dates), so every channel here, "
+               "including yours, is scored on exactly those. Each channel is measured against its **own** typical video, "
+               "which makes a 30k channel and a 300k channel comparable.")
+
+    comp_key = api_key
+    if not comp_key:
+        try:
+            comp_key = st.secrets["YOUTUBE_API_KEY"]
+        except Exception:
+            comp_key = ""
+
+    use_demo = mode == "Demo channel" and st.toggle("Use demo competitors", value=True)
+    comp_frames: dict[str, tuple[pd.DataFrame, dict]] = {}
+    errors = []
+    if use_demo:
+        for name in competitors.DEMO_COMPETITORS:
+            comp_frames[name] = competitors.demo_competitor(name)
+    else:
+        with st.form("comp_form"):
+            handles_txt = st.text_area("Competitor channels (one per line, up to 6)",
+                                       value=st.session_state.get("comp_handles", ""),
+                                       placeholder="@competitorone\n@competitortwo\nhttps://youtube.com/@competitorthree")
+            c1, c2 = st.columns(2)
+            per_channel = c1.slider("Recent videos per channel", 20, 200, 60, step=10)
+            key_in = "" if comp_key else c2.text_input("YouTube Data API key", type="password",
+                                                         help="Needed to read other channels. See the setup guide PDF.")
+            comp_csvs = st.file_uploader("No API key? Upload a CSV per competitor instead (Video title, Views, "
+                                         "Video publish time, Duration, Likes, Comments). The file name becomes the channel name.",
+                                         type="csv", accept_multiple_files=True)
+            go_btn = st.form_submit_button("Compare", type="primary")
+        if go_btn:
+            st.session_state.comp_handles = handles_txt
+            st.session_state.comp_per_channel = per_channel
+        key = comp_key or key_in
+        handles = [h.strip() for h in st.session_state.get("comp_handles", "").splitlines() if h.strip()][:6]
+        if handles and not key:
+            st.warning("Add a YouTube API key to fetch competitor channels, or upload their CSVs instead.")
+        elif handles:
+            for h in handles:
+                try:
+                    d, i = cached_channel(h, key, st.session_state.get("comp_per_channel", 60))
+                    comp_frames[i["name"]] = (d, i)
+                except Exception as e:
+                    errors.append(f"{h}: {e}")
+        for f in comp_csvs or []:
+            try:
+                d = sources.load_csv(f)
+                comp_frames[f.name.rsplit(".", 1)[0]] = (d, {"name": f.name.rsplit(".", 1)[0]})
+            except Exception as e:
+                errors.append(f"{f.name}: {e}")
+    for e in errors:
+        st.error(e)
+
+    if not comp_frames:
+        st.info("Add 2–6 competitor channels above: channels in your niche that are growing faster than you. "
+                "Pick ones with similar story styles so the comparison is meaningful.", icon="⚔️")
+    else:
+        your_subs = info.get("subscribers")
+        if not your_subs:
+            your_subs = st.number_input("Your subscriber count (for views-per-subscriber)", min_value=0, value=0, step=100) or None
+
+        you_scored = competitors.public_score(data, competitors.YOU)
+        comp_scored, comp_summ = [], {}
+        for name, (d, i) in comp_frames.items():
+            now_ts = pd.Timestamp.now(tz="UTC")
+            if d["published"].notna().any():
+                d = d[(d["published"].isna()) | ((now_ts - d["published"]).dt.days >= min_age)]
+            if len(d) < 5:
+                st.warning(f"{name}: not enough videos to analyze.")
+                continue
+            sc = competitors.public_score(d, name)
+            comp_scored.append(sc)
+            comp_summ[name] = competitors.summary(sc, i.get("subscribers"))
+
+        if comp_scored:
+            bench = competitors.benchmark(competitors.summary(you_scored, your_subs), comp_summ)
+            lc = competitors.lift_compare(you_scored, comp_scored)
+            opp = competitors.opportunities(bench, lc)
+
+            # ---- where you stand
+            st.markdown("#### Where you stand")
+            ranks = []
+            for key_m, (label, fmt, higher, _) in competitors.METRICS.items():
+                if higher is None:
+                    continue
+                col = bench[key_m]
+                if col.notna().sum() < 2 or pd.isna(bench.loc[0, key_m]):
+                    continue
+                r = int((col > bench.loc[0, key_m]).sum()) + 1
+                ranks.append((label, r, int(col.notna().sum()), fmt.format(bench.loc[0, key_m]),
+                              fmt.format(col.iloc[1:].median())))
+            cols = st.columns(max(1, len(ranks)))
+            for c, (label, r, n, mine, theirs) in zip(cols, ranks):
+                c.metric(label, mine, f"#{r} of {n} · rivals {theirs}", delta_color="normal" if r == 1 else "off"
+                         if r <= (n + 1) / 2 else "inverse", border=True,
+                         delta_arrow="off")
+
+            # ---- opportunities
+            st.markdown("#### What to take from them")
+            o1, o2, o3 = st.columns(3)
+            for col_box, title, key_o, blurb in [
+                (o1, "🎯 Content gaps", "gaps", "What works for them that you're not doing (yet)."),
+                (o2, "🛡️ Your edges", "edges", "Where you already beat them. Protect these."),
+                (o3, "📋 Habits to borrow", "habits", "Publishing patterns that differ from yours."),
+            ]:
+                with col_box.container(border=True):
+                    st.markdown(f"**{title}**")
+                    st.caption(blurb)
+                    if opp[key_o]:
+                        for it in opp[key_o]:
+                            st.markdown(f"- {it}")
+                    else:
+                        st.markdown("<span class='muted'>Nothing clear-cut here.</span>", unsafe_allow_html=True)
+
+            # ---- head to head
+            st.markdown("#### Head to head")
+            st.caption("**You** in blue, competitors in gray.")
+            items = list(competitors.METRICS.items())
+            for row_start in range(0, len(items), 3):
+                cs = st.columns(3)
+                for c, (key_m, (label, fmt, _, expl)) in zip(cs, items[row_start:row_start + 3]):
+                    if bench[key_m].notna().sum() == 0:
+                        continue
+                    with c:
+                        plot(charts.benchmark_bars(bench, key_m, label, fmt))
+                        st.caption(expl)
+
+            # ---- content points
+            if not lc.empty:
+                st.markdown("#### Content points: what works for them vs for you")
+                st.caption("Each bar is how far videos with that trait land above or below **their own channel's** average. "
+                           "Orange long + blue short = a proven idea you haven't cracked yet. Blue long = your edge.")
+                dims = sorted(lc["dimension"].unique(), key=competitors.SHARED_DIMS.index)
+                pick_dims = st.pills("Show", dims, selection_mode="multi",
+                                     default=[d for d in dims if d != "Publish day"], key="comp_dims")
+                sub = lc[lc["dimension"].isin(pick_dims or dims)]
+                plot(charts.niche_vs_you(sub))
+
+            # ---- breakouts
+            st.markdown("#### What's breaking out for them")
+            st.caption("Their videos that got **2× or more** the views that channel normally gets at that age. "
+                       "Look for repeated premises, title shapes and thumbnail styles.")
+            bo = competitors.breakouts(comp_scored)
+            if bo.empty:
+                st.markdown("<span class='muted'>No clear breakouts in this sample.</span>", unsafe_allow_html=True)
+            for i in range(0, len(bo), 3):
+                cs = st.columns(3)
+                for c, (_, r) in zip(cs, bo.iloc[i:i + 3].iterrows()):
+                    with c.container(border=True):
+                        if pd.notna(r.get("thumbnail")):
+                            st.image(r["thumbnail"], width="stretch")
+                        is_real = isinstance(r["video_id"], str) and len(r["video_id"]) == 11
+                        title_md = f"[{r['title']}](https://www.youtube.com/watch?v={r['video_id']})" if is_real else r["title"]
+                        st.markdown(f"**{title_md}**")
+                        st.markdown(f"<span class='muted'>{r['channel'].replace('Demo: ', '')} · {r['views']:,.0f} views · "
+                                    f"<b>{r['reach_x']:.1f}×</b> their normal · {r['f:Title theme']}</span>",
+                                    unsafe_allow_html=True)
+
+            # ---- title words
+            pooled = pd.concat(comp_scored, ignore_index=True)
+            kw = engine.keyword_lift(pooled, min_n=4)
+            if len(kw) >= 6:
+                st.markdown("#### Title words that pull for them")
+                st.caption("Words in 4+ competitor titles, ranked by how those videos did against their channel's average.")
+                plot(charts.keyword_bars(kw, top=6, xtitle="Points above / below their channel's average"))
+
+            with st.expander("Full scorecard"):
+                fmt_cols = {k: st.column_config.NumberColumn(v[0], format="%.1f") for k, v in competitors.METRICS.items()}
+                fmt_cols["Median views"] = st.column_config.NumberColumn("Median views", format="localized")
+                fmt_cols["Subscribers"] = st.column_config.NumberColumn("Subscribers", format="localized")
+                st.dataframe(bench, hide_index=True, column_config=fmt_cols)

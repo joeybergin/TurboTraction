@@ -87,7 +87,8 @@ def tier_bars(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def lift_bars(cp: pd.DataFrame, title_col: str = "value", height: int | None = None) -> go.Figure:
+def lift_bars(cp: pd.DataFrame, title_col: str = "value", height: int | None = None,
+              xtitle: str = "Traction points above / below your channel average") -> go.Figure:
     d = cp.sort_values("lift")
     colors = [BLUE if v > 1 else RED if v < -1 else NEUTRAL for v in d["lift"]]
     labels = [f"{_short(str(x), 40)}" for x in d[title_col]]
@@ -101,7 +102,7 @@ def lift_bars(cp: pd.DataFrame, title_col: str = "value", height: int | None = N
     ))
     _base(fig, height or max(220, 46 * len(d) + 60), showlegend=False, bargap=0.3)
     span = max(5, d["lift"].abs().max() * 1.45)
-    fig.update_xaxes(range=[-span, span], title="Traction points above / below your channel average", zeroline=True,
+    fig.update_xaxes(range=[-span, span], title=xtitle, zeroline=True,
                      zerolinecolor=INK_2, zerolinewidth=1)
     fig.update_yaxes(gridcolor="rgba(0,0,0,0)")
     return fig
@@ -200,12 +201,12 @@ def _describe_z(z: float) -> str:
     return "far below"
 
 
-def keyword_bars(kw: pd.DataFrame, top: int = 8) -> go.Figure:
+def keyword_bars(kw: pd.DataFrame, top: int = 8, **kw_args) -> go.Figure:
     d = pd.concat([kw.head(top), kw.tail(top)]).drop_duplicates("word")
     d = d.rename(columns={"word": "value"})
     d["avg_score"] = d["lift"]
     d["confidence"] = ""
-    return lift_bars(d)
+    return lift_bars(d, **kw_args)
 
 
 def cadence_bars(cad: pd.DataFrame) -> go.Figure:
@@ -218,4 +219,50 @@ def cadence_bars(cad: pd.DataFrame) -> go.Figure:
     _base(fig, 300, showlegend=False, bargap=0.4)
     fig.update_yaxes(range=[0, max(100, cad["avg_score"].max() * 1.2)], title="Avg traction")
     fig.update_xaxes(title="Days since previous upload", gridcolor="rgba(0,0,0,0)")
+    return fig
+
+
+# --------------------------------------------------------------------------- competitors
+
+ORANGE = "#d95926"  # categorical slot 2 (dark mode)
+COMP_GRAY = "#6b6a66"
+
+
+def benchmark_bars(bench: pd.DataFrame, col: str, label: str, fmt: str, you: str = "You") -> go.Figure:
+    d = bench.dropna(subset=[col]).sort_values(col)
+    colors = [BLUE if c == you else COMP_GRAY for c in d["channel"]]
+    names = [f"<b>{c}</b>" if c == you else _short(str(c).replace("Demo: ", ""), 22) for c in d["channel"]]
+    fig = go.Figure(go.Bar(
+        y=names, x=d[col], orientation="h", marker=dict(color=colors, cornerradius=4),
+        text=[fmt.format(v) for v in d[col]], textposition="outside", textfont=dict(color=INK_2, size=12),
+        cliponaxis=False, hovertemplate="%{y}: %{text}<extra></extra>",
+    ))
+    _base(fig, max(170, 38 * len(d) + 70), showlegend=False, bargap=0.3,
+          title=dict(text=label, font=dict(color=INK, size=14)))
+    fig.update_xaxes(visible=False, range=[0, d[col].max() * 1.35 if len(d) and d[col].max() > 0 else 1])
+    fig.update_yaxes(gridcolor="rgba(0,0,0,0)")
+    return fig
+
+
+def niche_vs_you(lc: pd.DataFrame) -> go.Figure:
+    d = lc.sort_values("niche_lift")
+    labels = [_short(f"{r.dimension}: {r.value}", 44) for r in d.itertuples()]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=labels, x=d["niche_lift"], orientation="h", name="Competitors", marker=dict(color=ORANGE, cornerradius=3),
+        customdata=np.stack([d["niche_videos"], d["channels_using"]], axis=1),
+        hovertemplate="<b>%{y}</b><br>Competitors: %{x:+.1f}<br>%{customdata[0]} videos across "
+                      "%{customdata[1]} channels<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        y=labels, x=d["your_lift"], orientation="h", name="You", marker=dict(color=BLUE, cornerradius=3),
+        customdata=d["your_videos"],
+        hovertemplate="<b>%{y}</b><br>You: %{x:+.1f}<br>%{customdata} of your videos<extra></extra>",
+    ))
+    _base(fig, max(300, 34 * len(d) + 110), barmode="group", bargap=0.3, bargroupgap=0.08)
+    span = max(8, np.nanmax(np.abs(np.r_[d["niche_lift"].values, d["your_lift"].fillna(0).values])) * 1.15)
+    fig.update_xaxes(range=[-span, span], title="Points above / below each channel's own average",
+                     zeroline=True, zerolinecolor=INK_2)
+    fig.update_yaxes(gridcolor="rgba(0,0,0,0)")
+    fig.update_layout(legend=dict(traceorder="reversed"))
     return fig

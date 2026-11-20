@@ -12,6 +12,7 @@ hook, visual style, length, title craft, timing), and shows which ones gain trac
 | **Content DNA** | Which creative choices lift the score, which hurt it, and which *combinations* work best? Which title words pull? |
 | **Video diagnostics** | For any video: was the problem **packaging** (people didn't click) or **payoff** (people didn't stay)? What should you do next? |
 | **Growth playbook** | Plain-language takeaways: double down, rethink, fix next, upload rhythm, and a next-video checklist. |
+| **Competitors** | How you stack up against rival channels: views, engagement, upload rhythm, breakout rate, which content points work for them vs you, and their breakout videos. |
 | **Tag & data** | Tag videos with your own labels (narrator voice, thumbnail style…), then download scored data. |
 
 ## The traction score (0–100, 50 = a typical video for your channel)
