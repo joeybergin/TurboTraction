@@ -46,7 +46,7 @@ re-upload the file next time.
 ## Run it
 
 ```
-pip install -r requirements.txt
+pip install -U -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
